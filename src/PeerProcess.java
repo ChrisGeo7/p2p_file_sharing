@@ -6,7 +6,6 @@ import java.nio.file.Paths;
 import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.BitSet;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +42,8 @@ public class PeerProcess implements Constants
     public static Map<Integer, BitSet> peerBitMap = new HashMap<Integer, BitSet>();
     public static List<Integer> peerIsInterested = new ArrayList<>();
     public static List<Integer> neighborList = new ArrayList<>();
+    public static  Map<Integer, Boolean> peerHasChoked = new HashMap<Integer, Boolean>();
+    public static  Map<Integer, Boolean> pieceReceived = new HashMap<Integer, Boolean>();
     
     // Loaded from the config file
     public static int numPreferredNeighbors;
@@ -52,6 +53,14 @@ public class PeerProcess implements Constants
     public static int fileSize;
     public static int pieceSize;
     public static int totalPieces;
+
+    public static boolean isValidPiece(int pieceNum){
+        if(pieceNum >= 0 && pieceNum < totalPieces){
+            return true;
+        }
+
+        return false;
+    }
 
     public static boolean isInterested(int peerID){
         BitSet peerBitSet = peerBitMap.get(peerID);
@@ -120,6 +129,8 @@ public class PeerProcess implements Constants
                                         
                             Message recBitFieldMsg = new Message(bitFieldBuffer);
                             peerBitMap.put(peer.peerId, recBitFieldMsg.getBitSet(totalPieces));
+                            peerHasChoked.put(peer.peerId, true);
+                            pieceReceived.put(peer.peerId, false);
 
                             // check if interested in the peer
                             Message interestedMsg;
@@ -319,6 +330,7 @@ public class PeerProcess implements Constants
                                 synchronized(this) {
                                     // Add it the map to keep track of PeerID bitmaps
                                     peerBitMap.put(callerPeerID, recBitFieldMsg.getBitSet(totalPieces));
+                                    peerHasChoked.put(callerPeerID, true);
                                 }
 
                                 // Send the bitfield 
@@ -401,7 +413,18 @@ public class PeerProcess implements Constants
             }
         }
     }
-    
+
+    public static void handleChoke(Socket socket) {
+        int peerID = getSenderPeerID(socket);
+        peerHasChoked.put(peerID, true);
+    }
+
+    public static void handleUnChoke(Socket socket) {
+        int peerID = getSenderPeerID(socket);
+        peerHasChoked.put(peerID, false);
+        sendRequest(socket);
+    }
+
     public static void sendunchokemsg()
     {
         while(neighborList.size() == 0){
@@ -433,43 +456,67 @@ public class PeerProcess implements Constants
         }
     } 
 
-    public static void sendRequest(Socket socket, DataOutputStream out){
+    public static void sendRequest(Socket socket){
         if(myBitMap.cardinality() ==totalPieces){
             return;
         }
         
         int peerID = getSenderPeerID(socket);
-
-        int missingPieceIndex = Integer.MIN_VALUE;
-        Random random = new Random();
         
-        while(true){
-            int pos = random.nextInt(totalPieces);
+        
+        Thread sendReqThread = new Thread(new Runnable() {
+            public void run()
+            {
+                while(!peerHasChoked.get(peerID)){
+                    int missingPieceIndex = Integer.MIN_VALUE;
+                    Random random = new Random();
+                    
+                    while(true){
+                        int pos = random.nextInt(totalPieces);
 
-            if(myBitMap.get(pos) == false && peerBitMap.get(peerID).get(pos) == true){
-                missingPieceIndex = pos;
-                break;
+                        if(myBitMap.get(pos) == false && peerBitMap.get(peerID).get(pos) == true){
+                            missingPieceIndex = pos;
+                            break;
+                        }
+                    }  
+                
+                    byte[] reqMsgPayLoad = ByteBuffer.allocate(4).putInt(missingPieceIndex).array();
+                    Message reqMsg = new Message(REQUEST, reqMsgPayLoad);
+                    pieceReceived.put(peerID, false);
+                    
+                    try {
+                        DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                        out.write(reqMsg.message);
+                        
+                        // Wait until the requested piece is received
+                        while(!pieceReceived.get(peerID)){
+                            Thread.sleep(100);
+                        }
+                    } catch (IOException | InterruptedException e) {
+                        System.err.println("Couldn't send request message!!!");
+                    }
+                }
             }
-        }  
-        
-        byte[] reqMsgPayLoad = ByteBuffer.allocate(4).putInt(missingPieceIndex).array();
-        Message reqMsg = new Message(REQUEST, reqMsgPayLoad);
-        
-        try {
-            out.write(reqMsg.message);
-        } catch (IOException e) {
-            System.err.println("Couldn't send request message!!!");
-        }
+        });
+
+        sendReqThread.start();
     }
 
-    public static void handleRequest(Socket socket, Message reqMsg){
-        int pieceNumber = new BigInteger(reqMsg.msgPayLoad).intValue();
-
-        if(pieceNumber < totalPieces && myBitMap.get(pieceNumber)){
-            sendPiece(socket, pieceNumber);
-        }else{
-            System.err.println("Invalid request for piece");
-        }
+    public static void handleRequest(Socket socket, Message reqMsg){ 
+        Thread handleRequest = new Thread(new Runnable() {
+            public void run()
+            {
+                int pieceNumber = new BigInteger(reqMsg.msgPayLoad).intValue();
+                
+                if(isValidPiece(pieceNumber) && myBitMap.get(pieceNumber)){
+                    sendPiece(socket, pieceNumber);
+                }else{
+                    System.err.println("Invalid request for piece");
+                }
+            }
+        });
+        
+        handleRequest.start();
     }
 
     public static void sendPiece(Socket socket, int pieceNumber){
@@ -514,9 +561,15 @@ public class PeerProcess implements Constants
         buffer.get(fileContent, 0, fileLen);
 
         int pieceNumber = new BigInteger(pieceNum).intValue();
-        myBitMap.set(pieceNumber, true);
-
-        sendHaveMsg(pieceNum);
+        int peerID = getSenderPeerID(socket);
+        
+        if(isValidPiece(pieceNumber)){
+            myBitMap.set(pieceNumber, true);
+            pieceReceived.put(peerID, true);
+            sendHaveMsg(pieceNum);
+        }else{
+            System.err.println("Received invalid piece: " + pieceNumber);
+        }
         
 		try {
             String parentDir = new File (System.getProperty("user.dir")).getParent();
@@ -533,6 +586,7 @@ public class PeerProcess implements Constants
 	
         logger.info("Peer " + myPeerID + " has downloaded the " + pieceNumber + " from " + getSenderPeerID(socket) +". Now the number of pieces it has is " +myBitMap.cardinality());
     }
+
     public static void sendHaveMsg(byte[] pieceNumber){
         for(Integer peerid : peerSocketMap.keySet()){
             try {
@@ -550,9 +604,9 @@ public class PeerProcess implements Constants
                             }
                     }
                 });
+                
                 sendHaveThread.start();
             } catch (IOException e1) {
-                // TODO Auto-generated catch block
                 e1.printStackTrace();
             }
         }
@@ -609,11 +663,12 @@ public class PeerProcess implements Constants
                 switch (recMsg.msgType) {
                     case CHOKE:
                         logger.info("Peer " + myPeerID + " is choked by " + getSenderPeerID(socket));
+                        handleChoke(socket);
                         break;
                 
                     case UNCHOKE:
                         logger.info("Peer " + myPeerID + " is unchoked by " + getSenderPeerID(socket));
-                        sendRequest(socket, out);
+                        handleUnChoke(socket);
                         break;
                     
                     case INTERESTED:
