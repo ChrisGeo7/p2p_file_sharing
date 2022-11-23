@@ -6,11 +6,15 @@ import java.nio.file.Paths;
 import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
+import java.util.SortedMap;
 import java.util.Vector;
 import java.util.Map.Entry;
 import java.util.concurrent.Executors;
@@ -19,6 +23,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.FileHandler;
 import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
+import java.util.stream.Stream;
+
+import javax.management.timer.Timer;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigInteger;
@@ -44,6 +52,7 @@ public class PeerProcess implements Constants
     public static List<Integer> neighborList = new ArrayList<>();
     public static  Map<Integer, Boolean> peerHasChoked = new HashMap<Integer, Boolean>();
     public static  Map<Integer, Boolean> pieceReceived = new HashMap<Integer, Boolean>();
+    public static  Map<Integer, Integer> peerDownloadRate = new HashMap<Integer, Integer>();
     
     // Loaded from the config file
     public static int numPreferredNeighbors;
@@ -230,37 +239,51 @@ public class PeerProcess implements Constants
 
     public static class setNeighbours implements Runnable{
         public void run(){
-            // check the downLoad rates and make a list of top n peers from interested list
-            System.out.println("Get neighbors");
             Random random = new Random();  
             int interestedCount;
             List<Integer> prevneighborList = new ArrayList<>();
 
+            LinkedHashMap<Integer, Integer> sortedMap = new LinkedHashMap<>();
+            Iterator<Integer> it;
+
             synchronized(this){
                 interestedCount = peerIsInterested.size();
-                
-                for(int i = 0; i <neighborList.size()  ; i++){
+                peerDownloadRate.entrySet().stream().sorted(Collections.reverseOrder(Map.Entry.comparingByValue())).
+                forEachOrdered(v -> sortedMap.put(v.getKey(), v.getValue()));
+                it= sortedMap.keySet().iterator();
+
+                for(int i = 0; i <neighborList.size(); i++){
                     prevneighborList.add(neighborList.get(i));
                 }
             }
 
-            // Note that the iteration is done with + 1 to incorporate the random neighbor for now
             if(neighborList.size() == 0){
                 for(int i = 0; i < numPreferredNeighbors + 1; i++){
                     neighborList.add(peerIsInterested.get(random.nextInt(interestedCount)));
                 }
             }else{
-                for(int i = 0; i < numPreferredNeighbors + 1; i++){
-                    neighborList.set(i, peerIsInterested.get(random.nextInt(interestedCount)));
+                for(int i = 0; i < numPreferredNeighbors; i++){
+                    Integer y = it.next();
+                    neighborList.set(i, y);
+                    System.out.println("Neighour " + i + y+ " has download rate " + peerDownloadRate.get(y));
                 }
+
+                int randomNeighbor = peerIsInterested.get(random.nextInt(interestedCount));
+
+                while(!neighborList.contains(randomNeighbor) && interestedCount != numPreferredNeighbors){
+                    randomNeighbor = peerIsInterested.get(random.nextInt(interestedCount));
+                }
+
+                neighborList.set(numPreferredNeighbors, randomNeighbor);
             }
-            
+
             logger.info("Peer " + myPeerID + " has the preferred neighbors " + neighborList);
 
             synchronized(this){
                 if(!prevneighborList.equals(neighborList)){
-                    sendchokemsg(neighborList, prevneighborList);
+                    sendchokemsg(prevneighborList);
                 }
+                
                 sendunchokemsg();
             }
         }
@@ -381,8 +404,9 @@ public class PeerProcess implements Constants
             System.out.println("Failed while peer connection");
         }
     }
-    public static void sendchokemsg(List<Integer> neighborList, List<Integer> prevneighborList){
-        for(int i = 0; i < numPreferredNeighbors + 1; i ++)
+
+    public static void sendchokemsg(List<Integer> prevneighborList){
+        for(int i = 0; i < neighborList.size(); i ++)
         {   
             if(prevneighborList.size() == 0){
                 break;
@@ -428,8 +452,10 @@ public class PeerProcess implements Constants
     public static void sendunchokemsg()
     {
         while(neighborList.size() == 0){
+            // Wait for neighborList to be populated
         }
-        for(int i = 0; i < numPreferredNeighbors + 1; i ++)
+        
+        for(int i = 0; i < neighborList.size(); i ++)
         {
             int peerID = neighborList.get(i);
             try {
@@ -440,6 +466,8 @@ public class PeerProcess implements Constants
                     public void run()
                     {
                             try {
+                                peerDownloadRate.put(peerID, 0);
+
                                 Message unchokeMsg =  new Message(UNCHOKE, null);
                                 out.write(unchokeMsg.message);
                             } catch (IOException e) {
@@ -509,13 +537,18 @@ public class PeerProcess implements Constants
                 int pieceNumber = new BigInteger(reqMsg.msgPayLoad).intValue();
                 
                 if(isValidPiece(pieceNumber) && myBitMap.get(pieceNumber)){
+                    int peerID = getSenderPeerID(socket);
+                    
                     sendPiece(socket, pieceNumber);
+                    synchronized(this){
+                        peerDownloadRate.put(peerID, peerDownloadRate.get(peerID) + 1);
+                    }
                 }else{
                     System.err.println("Invalid request for piece");
                 }
             }
         });
-        
+
         handleRequest.start();
     }
 
@@ -537,7 +570,7 @@ public class PeerProcess implements Constants
             Message pieceMsg = new Message(PIECE, buffer);
             DataOutputStream out = new DataOutputStream(socket.getOutputStream());
 
-            out.write(pieceMsg.message);
+            out.write(pieceMsg.message);            
         } catch (IOException e) {
             System.err.println("Error while sending piece");
         }
