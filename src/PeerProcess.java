@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.net.ServerSocket;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Collections;
 import java.util.HashMap;
@@ -790,6 +791,34 @@ public class PeerProcess implements Constants
 		} catch (Exception e) {
             e.printStackTrace();
 			System.out.println("Couldn't Split the file");
+		}
+    }
+
+    public static void fileJoiner(){
+        try {
+            String parentDir = new File (System.getProperty("user.dir")).getParent();
+            String folderPath = parentDir + "/" + myPeerID;
+            File file = new File(folderPath + "/pieces");
+		    File[] files = file.listFiles();
+		    Arrays.sort(files);
+
+            String outputFile = folderPath + "/" + fileName;
+            FileOutputStream fileOutput = new FileOutputStream(outputFile);
+			
+            for(int i = 0; i < files.length; i++){
+                FileInputStream fileInput = new FileInputStream(files[i].getPath());
+                byte buffer[] = new byte[pieceSize];
+                int len = fileInput.read(buffer, 0, pieceSize);
+                fileOutput.write(buffer, 0, len);
+                fileInput.close();
+            }
+			
+            fileOutput.flush();
+            fileOutput.close();
+            
+		} catch (Exception e) {
+            e.printStackTrace();
+			System.out.println("Couldn't join the file");
 		}
     }
 
