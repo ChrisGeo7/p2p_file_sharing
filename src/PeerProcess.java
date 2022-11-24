@@ -3,6 +3,8 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -14,21 +16,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
-import java.util.SortedMap;
 import java.util.Vector;
 import java.util.Map.Entry;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.FileHandler;
-import java.util.logging.Logger;
-import java.util.logging.SimpleFormatter;
-import java.util.stream.Stream;
-
-import javax.management.timer.Timer;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintStream;
 import java.math.BigInteger;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
@@ -45,7 +41,7 @@ public class PeerProcess implements Constants
     public static ServerSocket mySocket;
     public static Vector<PeerInfo> peerInfo = new Vector<PeerInfo>();
     public static Map<Integer, Socket> peerSocketMap = new HashMap<Integer, Socket>();
-    public static Logger logger = Logger.getLogger("PeerLog");
+    public static PrintStream logFileHandler;
     public static BitSet myBitMap;
     public static Map<Integer, BitSet> peerBitMap = new HashMap<Integer, BitSet>();
     public static List<Integer> peerIsInterested = new ArrayList<>();
@@ -62,6 +58,12 @@ public class PeerProcess implements Constants
     public static int fileSize;
     public static int pieceSize;
     public static int totalPieces;
+
+    public static void log(String message){
+        LocalDateTime curTime = LocalDateTime.now();
+        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");  
+        logFileHandler.println(dtf.format(curTime) + ": " + message);
+    }
 
     public static boolean isValidPiece(int pieceNum){
         if(pieceNum >= 0 && pieceNum < totalPieces){
@@ -121,7 +123,7 @@ public class PeerProcess implements Constants
                             peerSocketMap.put(peer.peerId, peerSocket);
                 
                             // Should be sent to a log file along with timestamp
-			                logger.info("Peer " + currPeerID + " makes a connection to Peer " + peer.peerId);
+			                log("Peer " + currPeerID + " makes a connection to Peer " + peer.peerId);
                             
                             Message bitFieldMsg = new Message(BITFIELD, myBitMap.toByteArray());
                             out.write(bitFieldMsg.message);
@@ -207,7 +209,7 @@ public class PeerProcess implements Constants
                     Boolean hasFile = value[3].equals("1");
                     // Create a socket at the port for TCP connections
                     mySocket = new ServerSocket(Integer.parseInt(port));
-                    logger.info("Socket created\n");
+
                     // Set the bitmap
                     myBitMap.set(0, totalPieces, hasFile);
 
@@ -262,22 +264,25 @@ public class PeerProcess implements Constants
                     neighborList.add(peerIsInterested.get(random.nextInt(interestedCount)));
                 }
             }else{
+                neighborList.clear();
+
                 for(int i = 0; i < numPreferredNeighbors; i++){
-                    Integer y = it.next();
-                    neighborList.set(i, y);
-                    System.out.println("Neighour " + i + y+ " has download rate " + peerDownloadRate.get(y));
+                    Integer neighbor = it.next();
+                    neighborList.add(neighbor);
+                    // System.out.println("Neighour " + i + neighbor + " has download rate " + peerDownloadRate.get(neighbor));
                 }
 
                 int randomNeighbor = peerIsInterested.get(random.nextInt(interestedCount));
 
-                while(!neighborList.contains(randomNeighbor) && interestedCount != numPreferredNeighbors){
+                while(neighborList.contains(randomNeighbor) && interestedCount > numPreferredNeighbors){
                     randomNeighbor = peerIsInterested.get(random.nextInt(interestedCount));
+                    break;
                 }
 
-                neighborList.set(numPreferredNeighbors, randomNeighbor);
+                neighborList.add(randomNeighbor);
             }
 
-            logger.info("Peer " + myPeerID + " has the preferred neighbors " + neighborList);
+            log("Peer " + myPeerID + " has the preferred neighbors " + neighborList);
 
             synchronized(this){
                 if(!prevneighborList.equals(neighborList)){
@@ -336,7 +341,7 @@ public class PeerProcess implements Constants
                                     peerSocketMap.put(callerPeerID, socket);
                                 }
                                 
-                                logger.info("Peer " + myPeerID + " is connected from Peer " + callerPeerID);
+                                log("Peer " + myPeerID + " is connected from Peer " + callerPeerID);
                                 
                                 // Receive the BITFIELD
                                 int byteCount = input.available();
@@ -375,10 +380,10 @@ public class PeerProcess implements Constants
                                 synchronized(this) {
                                     // Add it the map to keep track of PeerID's that are interested
                                     if(recInterestedMsg.msgType == INTERESTED){
-                                        logger.info("Peer " + myPeerID + " received the 'interested' message from " + getSenderPeerID(socket));
+                                        log("Peer " + myPeerID + " received the 'interested' message from " + getSenderPeerID(socket));
                                         peerIsInterested.add(callerPeerID);
                                     }else if(recInterestedMsg.msgType == NOT_INTERESTED){
-                                        logger.info("Peer " + myPeerID + " received the 'not interested' message from " + getSenderPeerID(socket));
+                                        log("Peer " + myPeerID + " received the 'not interested' message from " + getSenderPeerID(socket));
                                     }
                                 }
 
@@ -617,7 +622,7 @@ public class PeerProcess implements Constants
            System.err.println("Couldn't write the pieces");
         }
 	
-        logger.info("Peer " + myPeerID + " has downloaded the " + pieceNumber + " from " + getSenderPeerID(socket) +". Now the number of pieces it has is " +myBitMap.cardinality());
+        log("Peer " + myPeerID + " has downloaded the " + pieceNumber + " from " + getSenderPeerID(socket) +". Now the number of pieces it has is " +myBitMap.cardinality());
     }
 
     public static void sendHaveMsg(byte[] pieceNumber){
@@ -667,13 +672,16 @@ public class PeerProcess implements Constants
 
     public static void handleInterested(Socket socket, Message recMsg){
         int peerID = getSenderPeerID(socket);
-        System.out.println(peerID + " is interested.");
-        peerIsInterested.add(peerID);
+
+        if(!peerIsInterested.contains(peerID))
+        {
+            peerIsInterested.add(peerID);
+        }
     }
 
     public static void handleNotInterested(Socket socket, Message recMsg){
         int peerID = getSenderPeerID(socket);
-        System.out.println(peerID + " is not interested.");
+
         if(peerIsInterested.contains(peerID))
         {
             peerIsInterested.remove(Integer.valueOf(peerID));
@@ -695,12 +703,12 @@ public class PeerProcess implements Constants
                 Message recMsg = new Message(newBuffer);
                 switch (recMsg.msgType) {
                     case CHOKE:
-                        logger.info("Peer " + myPeerID + " is choked by " + getSenderPeerID(socket));
+                        log("Peer " + myPeerID + " is choked by " + getSenderPeerID(socket));
                         handleChoke(socket);
                         break;
                 
                     case UNCHOKE:
-                        logger.info("Peer " + myPeerID + " is unchoked by " + getSenderPeerID(socket));
+                        log("Peer " + myPeerID + " is unchoked by " + getSenderPeerID(socket));
                         handleUnChoke(socket);
                         break;
                     
@@ -713,12 +721,12 @@ public class PeerProcess implements Constants
                         break;
                 
                     case HAVE:
-                        logger.info("Received Have Message from " + getSenderPeerID(socket));
+                        log("Received Have Message from " + getSenderPeerID(socket));
                         handleHave(socket, recMsg);
                         break;
                     
                     case REQUEST:
-                        logger.info("Received Request Message");
+                        log("Received Request Message");
                         handleRequest(socket, recMsg);
                         break;
                     
@@ -794,11 +802,7 @@ public class PeerProcess implements Constants
 
         try {
             // Add handler for logging current node's logs
-            FileHandler logFileHandler = new FileHandler(parentDir + "/log_peer_" + inputPeerID + ".log");
-            SimpleFormatter formatter = new SimpleFormatter();  
-            
-            logger.addHandler(logFileHandler);
-            logFileHandler.setFormatter(formatter);
+            logFileHandler = new PrintStream(parentDir + "/log_peer_" + inputPeerID + ".log");
 
             String peerConfigFile = parentDir + "/PeerInfo.cfg";
             String commonConfigFile = parentDir + "/Common.cfg";
