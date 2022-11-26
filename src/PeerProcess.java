@@ -48,10 +48,12 @@ public class PeerProcess implements Constants
     public static Map<Integer, BitSet> peerBitMap = new HashMap<Integer, BitSet>();
     public static List<Integer> peerIsInterested = new ArrayList<>();
     public static List<Integer> neighborList = new ArrayList<>();
-    public static Map<Integer, Boolean> peerHasChoked = new HashMap<Integer, Boolean>();
-    public static Map<Integer, Boolean> pieceReceived = new HashMap<Integer, Boolean>();
-    public static Map<Integer, Integer> peerDownloadRate = new HashMap<Integer, Integer>();
     public static List<Thread> listenThreads = new ArrayList<>();
+    public static  Map<Integer, Boolean> peerHasChoked = new HashMap<Integer, Boolean>();
+    public static  Map<Integer, Boolean> chokedPeers = new HashMap<Integer, Boolean>();
+    public static  Map<Integer, Boolean> pieceReceived = new HashMap<Integer, Boolean>();
+    public static  Map<Integer, Integer> peerDownloadRate = new HashMap<Integer, Integer>();
+    public static int randomPeerID = 0;
     
     // Loaded from the config file
     public static int numPreferredNeighbors;
@@ -146,6 +148,7 @@ public class PeerProcess implements Constants
                             Message recBitFieldMsg = new Message(bitFieldBuffer);
                             peerBitMap.put(peer.peerId, recBitFieldMsg.getBitSet(totalPieces));
                             peerHasChoked.put(peer.peerId, true);
+                            chokedPeers.put(peer.peerId,true);
                             pieceReceived.put(peer.peerId, false);
 
                             // check if interested in the peer
@@ -246,15 +249,15 @@ public class PeerProcess implements Constants
 
     public static class setNeighbours implements Runnable{
         public void run(){
-            if(isCompleted()){
-                exitPeers();
+            // if(isCompleted()){
+            //     exitPeers();
                 
-                synchronized(this){                
-                    fileShareCompleted = true;
-                }
+            //     synchronized(this){                
+            //         fileShareCompleted = true;
+            //     }
 
-                prefScheduler.cancel(false);
-            }
+            //     prefScheduler.cancel(false);
+            // }
 
             Random random = new Random();  
             int interestedCount;
@@ -275,7 +278,7 @@ public class PeerProcess implements Constants
             }
 
             if(neighborList.size() == 0){
-                for(int i = 0; i < numPreferredNeighbors + 1; i++){
+                for(int i = 0; i < numPreferredNeighbors; i++){
                     neighborList.add(peerIsInterested.get(random.nextInt(interestedCount)));
                 }
             }else{
@@ -286,26 +289,44 @@ public class PeerProcess implements Constants
                     neighborList.add(neighbor);
                     // System.out.println("Neighour " + i + neighbor + " has download rate " + peerDownloadRate.get(neighbor));
                 }
-
-                int randomNeighbor = peerIsInterested.get(random.nextInt(interestedCount));
-
-                while(neighborList.contains(randomNeighbor) && interestedCount > numPreferredNeighbors){
-                    randomNeighbor = peerIsInterested.get(random.nextInt(interestedCount));
-                    break;
-                }
-
-                neighborList.add(randomNeighbor);
             }
 
             log("Peer " + myPeerID + " has the preferred neighbors " + neighborList);
 
             synchronized(this){
                 if(!prevneighborList.equals(neighborList)){
-                    sendchokemsg(prevneighborList);
+                    sendchokemsg(neighborList, prevneighborList);
                 }
                 
-                sendunchokemsg();
+                sendunchokemsg(neighborList);
             }
+        }
+    };
+
+    public static class setRandomNeighbours implements Runnable {
+        public void run(){
+            List<Integer> randomPeers = new ArrayList<>();
+            for(int peer: peerIsInterested){
+                if(chokedPeers.get(peer)){
+                    randomPeers.add(peer);
+                }
+            }
+            Random random = new Random();
+            int id = random.nextInt(randomPeers.size()); 
+            int newID = randomPeers.get(id);
+            System.out.println("RANDOM NEIGHBOR " + newID);
+            if(randomPeerID == 0){
+                randomPeerID = newID;
+                sendunchokemsg(Arrays.asList(newID));
+            }
+            else{
+                // send choke
+                sendchokemsg(Arrays.asList(newID), Arrays.asList(randomPeerID));
+                if(randomPeerID != newID)
+                    sendunchokemsg(Arrays.asList(newID));
+                randomPeerID = newID;
+            }
+
         }
     };
 
@@ -324,7 +345,11 @@ public class PeerProcess implements Constants
                     ScheduledExecutorService scheduler
                         = Executors.newScheduledThreadPool(1);
                     // Scheduling the neighbourFetch
-                    prefScheduler =scheduler.scheduleAtFixedRate(new setNeighbours(), 0, unchokingInterval, TimeUnit.SECONDS);
+                    prefScheduler = scheduler.scheduleAtFixedRate(new setNeighbours(), 0, unchokingInterval, TimeUnit.SECONDS);
+
+                    ScheduledExecutorService scheduler2
+                        = Executors.newScheduledThreadPool(1);
+                    scheduler2.scheduleAtFixedRate(new setRandomNeighbours(), 0, optimisticUnchokingInterval, TimeUnit.SECONDS);
             }
         });
         sharingThread.start();
@@ -374,6 +399,7 @@ public class PeerProcess implements Constants
                                     // Add it the map to keep track of PeerID bitmaps
                                     peerBitMap.put(callerPeerID, recBitFieldMsg.getBitSet(totalPieces));
                                     peerHasChoked.put(callerPeerID, true);
+                                    chokedPeers.put(callerPeerID, true);
                                 }
 
                                 // Send the bitfield 
@@ -426,7 +452,7 @@ public class PeerProcess implements Constants
         }
     }
 
-    public static void sendchokemsg(List<Integer> prevneighborList){
+    public static void sendchokemsg(List<Integer> neighborList, List<Integer> prevneighborList){
         for(int i = 0; i < neighborList.size(); i ++)
         {   
             if(prevneighborList.size() == 0){
@@ -448,6 +474,9 @@ public class PeerProcess implements Constants
                                 } catch (IOException e) {
                                     System.out.println("Failed while sending choke message");
                                 }
+                                synchronized(this){
+                                    chokedPeers.put(peerID,true);
+                                }
                         }
                     });
                     sendchokThread.start();
@@ -461,16 +490,18 @@ public class PeerProcess implements Constants
 
     public static void handleChoke(Socket socket) {
         int peerID = getSenderPeerID(socket);
+        System.out.println(myPeerID + "has been choked by " + peerID);
         peerHasChoked.put(peerID, true);
     }
 
     public static void handleUnChoke(Socket socket) {
         int peerID = getSenderPeerID(socket);
         peerHasChoked.put(peerID, false);
+        System.out.println(myPeerID + "has been unchoked by " + peerID);
         sendRequest(socket);
     }
 
-    public static void sendunchokemsg()
+    public static void sendunchokemsg(List<Integer> neighborList)
     {
         while(neighborList.size() == 0){
             // Wait for neighborList to be populated
@@ -493,6 +524,9 @@ public class PeerProcess implements Constants
                                 out.write(unchokeMsg.message);
                             } catch (IOException e) {
                                 System.out.println("Failed while sending unchoke message");
+                            }
+                            synchronized(this){
+                                chokedPeers.put(peerID, false);
                             }
                     }
                 });
@@ -850,7 +884,7 @@ public class PeerProcess implements Constants
 
     public static void exitPeers(){
         for(Thread lisThread : listenThreads){
-            lisThread.stop();
+            // lisThread.stop();
         }
 
         System.out.println("File sharing complete!! Exiting peers...`");
