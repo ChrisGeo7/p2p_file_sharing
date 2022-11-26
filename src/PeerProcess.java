@@ -21,6 +21,7 @@ import java.util.Vector;
 import java.util.Map.Entry;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 import java.io.IOException;
@@ -47,9 +48,10 @@ public class PeerProcess implements Constants
     public static Map<Integer, BitSet> peerBitMap = new HashMap<Integer, BitSet>();
     public static List<Integer> peerIsInterested = new ArrayList<>();
     public static List<Integer> neighborList = new ArrayList<>();
-    public static  Map<Integer, Boolean> peerHasChoked = new HashMap<Integer, Boolean>();
-    public static  Map<Integer, Boolean> pieceReceived = new HashMap<Integer, Boolean>();
-    public static  Map<Integer, Integer> peerDownloadRate = new HashMap<Integer, Integer>();
+    public static Map<Integer, Boolean> peerHasChoked = new HashMap<Integer, Boolean>();
+    public static Map<Integer, Boolean> pieceReceived = new HashMap<Integer, Boolean>();
+    public static Map<Integer, Integer> peerDownloadRate = new HashMap<Integer, Integer>();
+    public static List<Thread> listenThreads = new ArrayList<>();
     
     // Loaded from the config file
     public static int numPreferredNeighbors;
@@ -59,6 +61,8 @@ public class PeerProcess implements Constants
     public static int fileSize;
     public static int pieceSize;
     public static int totalPieces;
+    public static ScheduledFuture<?> prefScheduler;
+    public static boolean fileShareCompleted = false;
 
     public static void log(String message){
         LocalDateTime curTime = LocalDateTime.now();
@@ -242,6 +246,16 @@ public class PeerProcess implements Constants
 
     public static class setNeighbours implements Runnable{
         public void run(){
+            if(isCompleted()){
+                exitPeers();
+                
+                synchronized(this){                
+                    fileShareCompleted = true;
+                }
+
+                prefScheduler.cancel(false);
+            }
+
             Random random = new Random();  
             int interestedCount;
             List<Integer> prevneighborList = new ArrayList<>();
@@ -310,7 +324,7 @@ public class PeerProcess implements Constants
                     ScheduledExecutorService scheduler
                         = Executors.newScheduledThreadPool(1);
                     // Scheduling the neighbourFetch
-                    scheduler.scheduleAtFixedRate(new setNeighbours(), 0, unchokingInterval, TimeUnit.SECONDS);
+                    prefScheduler =scheduler.scheduleAtFixedRate(new setNeighbours(), 0, unchokingInterval, TimeUnit.SECONDS);
             }
         });
         sharingThread.start();
@@ -405,6 +419,7 @@ public class PeerProcess implements Constants
                     }
                 });
                 listenThread.start();
+                listenThreads.add(listenThread);
             }
         } catch (IOException e) {
             System.out.println("Failed while peer connection");
@@ -820,6 +835,25 @@ public class PeerProcess implements Constants
             e.printStackTrace();
 			System.out.println("Couldn't join the file");
 		}
+    }
+    
+    public static boolean isCompleted(){
+        for(PeerInfo peer : peerInfo){
+            int peerID = peer.peerId;
+            if(peerBitMap.get(peerID).cardinality() != totalPieces){
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public static void exitPeers(){
+        for(Thread lisThread : listenThreads){
+            lisThread.stop();
+        }
+
+        System.out.println("File sharing complete!! Exiting peers...`");
     }
 
     public static void main(String[] args) {
