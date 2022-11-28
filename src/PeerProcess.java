@@ -23,7 +23,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
@@ -48,7 +48,6 @@ public class PeerProcess implements Constants
     public static Map<Integer, BitSet> peerBitMap = new HashMap<Integer, BitSet>();
     public static List<Integer> peerIsInterested = new ArrayList<>();
     public static List<Integer> neighborList = new ArrayList<>();
-    public static List<Thread> listenThreads = new ArrayList<>();
     public static  Map<Integer, Boolean> peerHasChoked = new HashMap<Integer, Boolean>();
     public static  Map<Integer, Boolean> chokedPeers = new HashMap<Integer, Boolean>();
     public static  Map<Integer, Boolean> pieceReceived = new HashMap<Integer, Boolean>();
@@ -64,7 +63,8 @@ public class PeerProcess implements Constants
     public static int pieceSize;
     public static int totalPieces;
     public static ScheduledFuture<?> prefScheduler;
-    public static boolean fileShareCompleted = false;
+    public static ScheduledFuture<?> optScheduler;
+    private final static AtomicBoolean fileShareCompleted = new AtomicBoolean(false);
 
     public static void log(String message){
         LocalDateTime curTime = LocalDateTime.now();
@@ -249,15 +249,13 @@ public class PeerProcess implements Constants
 
     public static class setNeighbours implements Runnable{
         public void run(){
-            // if(isCompleted()){
-            //     exitPeers();
-                
-            //     synchronized(this){                
-            //         fileShareCompleted = true;
-            //     }
-
-            //     prefScheduler.cancel(false);
-            // }
+            if(isCompleted()){
+                fileJoiner();
+                fileShareCompleted.set(true);
+                prefScheduler.cancel(false);
+                optScheduler.cancel(false);
+                Thread.currentThread().interrupt();
+            }
 
             Random random = new Random();  
             int interestedCount;
@@ -272,7 +270,7 @@ public class PeerProcess implements Constants
                 forEachOrdered(v -> sortedMap.put(v.getKey(), v.getValue()));
                 it= sortedMap.keySet().iterator();
 
-                for(int i = 0; i <neighborList.size(); i++){
+                for(int i = 0; i < neighborList.size(); i++){
                     prevneighborList.add(neighborList.get(i));
                 }
             }
@@ -306,27 +304,39 @@ public class PeerProcess implements Constants
     public static class setRandomNeighbours implements Runnable {
         public void run(){
             List<Integer> randomPeers = new ArrayList<>();
+            
             for(int peer: peerIsInterested){
                 if(chokedPeers.get(peer)){
+                    System.out.println("Choked neighbor "+ peer);
                     randomPeers.add(peer);
                 }
             }
-            Random random = new Random();
-            int id = random.nextInt(randomPeers.size()); 
-            int newID = randomPeers.get(id);
-            System.out.println("RANDOM NEIGHBOR " + newID);
+
+            int newID = 0;
+            
+            if(randomPeers.size()==0){
+                sendchokemsg(Arrays.asList(newID), Arrays.asList(randomPeerID));
+                randomPeerID =0;
+                return;
+            }else{
+                Random random = new Random();
+                int id = random.nextInt(randomPeers.size()); 
+                newID = randomPeers.get(id);
+            }
+            
             if(randomPeerID == 0){
                 randomPeerID = newID;
+                log("Peer " + myPeerID + " has the optimistically unchoked neighbor "+ newID);
                 sendunchokemsg(Arrays.asList(newID));
-            }
-            else{
-                // send choke
+            } else{
                 sendchokemsg(Arrays.asList(newID), Arrays.asList(randomPeerID));
-                if(randomPeerID != newID)
+                
+                if(randomPeerID != newID){
+                    log("Peer " + myPeerID + " has the optimistically unchoked neighbor "+ newID);
                     sendunchokemsg(Arrays.asList(newID));
-                randomPeerID = newID;
+                    randomPeerID = newID;
+                }
             }
-
         }
     };
 
@@ -349,7 +359,7 @@ public class PeerProcess implements Constants
 
                     ScheduledExecutorService scheduler2
                         = Executors.newScheduledThreadPool(1);
-                    scheduler2.scheduleAtFixedRate(new setRandomNeighbours(), 0, optimisticUnchokingInterval, TimeUnit.SECONDS);
+                    optScheduler = scheduler2.scheduleAtFixedRate(new setRandomNeighbours(), 0, optimisticUnchokingInterval, TimeUnit.SECONDS);
             }
         });
         sharingThread.start();
@@ -401,7 +411,8 @@ public class PeerProcess implements Constants
                                     peerHasChoked.put(callerPeerID, true);
                                     chokedPeers.put(callerPeerID, true);
                                 }
-
+                                
+                                System.out.println("Current cardinality " + myBitMap.cardinality());
                                 // Send the bitfield 
                                 Message msg = new Message(BITFIELD, myBitMap.toByteArray());
                                 out.write(msg.message);
@@ -438,6 +449,7 @@ public class PeerProcess implements Constants
                                 out.write(interestedMsg.message);
 
                                 listenForever(socket,input, out);
+                                System.out.println("WRAPPED UP LISTEN FOREVER");
                             }        
                         } catch (IOException e) {
                             System.out.println("Failed while peer connection");
@@ -445,7 +457,6 @@ public class PeerProcess implements Constants
                     }
                 });
                 listenThread.start();
-                listenThreads.add(listenThread);
             }
         } catch (IOException e) {
             System.out.println("Failed while peer connection");
@@ -503,9 +514,9 @@ public class PeerProcess implements Constants
 
     public static void sendunchokemsg(List<Integer> neighborList)
     {
-        while(neighborList.size() == 0){
-            // Wait for neighborList to be populated
-        }
+        // while(neighborList.size() == 0){
+        //     // Wait for neighborList to be populated
+        // }
         
         for(int i = 0; i < neighborList.size(); i ++)
         {
@@ -632,47 +643,56 @@ public class PeerProcess implements Constants
     }
 
     public static void handlePiece(Socket socket, Message pieceMsg) {
-        int payLoadLen = pieceMsg.msgPayLoad.length;
-        int fileLen = payLoadLen - 4;
+        Thread handlePieceThread = new Thread(new Runnable() {
+            public void run()
+            {
+                int payLoadLen = pieceMsg.msgPayLoad.length;
+                int fileLen = payLoadLen - 4;
 
-        if(payLoadLen <= 4){
-            System.err.println("Received a incomplete piece");
-        }
+                if(payLoadLen <= 4){
+                    System.err.println("Received a incomplete piece");
+                }
 
-        ByteBuffer buffer =  ByteBuffer.allocate(payLoadLen);
-        byte[] pieceNum = new byte[4];
-        byte[] fileContent = new byte[fileLen];
-        
-        buffer.put(pieceMsg.msgPayLoad);
-        buffer.rewind();
-        buffer.get(pieceNum, 0, 4);
-        buffer.get(fileContent, 0, fileLen);
+                ByteBuffer buffer =  ByteBuffer.allocate(payLoadLen);
+                byte[] pieceNum = new byte[4];
+                byte[] fileContent = new byte[fileLen];
+                
+                buffer.put(pieceMsg.msgPayLoad);
+                buffer.rewind();
+                buffer.get(pieceNum, 0, 4);
+                buffer.get(fileContent, 0, fileLen);
 
-        int pieceNumber = new BigInteger(pieceNum).intValue();
-        int peerID = getSenderPeerID(socket);
-        
-        if(isValidPiece(pieceNumber)){
-            myBitMap.set(pieceNumber, true);
-            pieceReceived.put(peerID, true);
-            sendHaveMsg(pieceNum);
-        }else{
-            System.err.println("Received invalid piece: " + pieceNumber);
-        }
-        
-		try {
-            String parentDir = new File (System.getProperty("user.dir")).getParent();
-            String folderPath = parentDir + "/" + myPeerID;
-            new File(folderPath + "/pieces").mkdirs();
-            String outputFile = folderPath  + "/pieces/" +  pieceNumber;
-		    FileOutputStream fileOutput = new FileOutputStream(outputFile);
-            fileOutput.write(fileContent, 0, fileLen);
-            fileOutput.flush();
-		    fileOutput.close();
-        } catch (IOException e) {
-           System.err.println("Couldn't write the pieces");
-        }
-	
-        log("Peer " + myPeerID + " has downloaded the " + pieceNumber + " from " + getSenderPeerID(socket) +". Now the number of pieces it has is " +myBitMap.cardinality());
+                int pieceNumber = new BigInteger(pieceNum).intValue();
+                int peerID = getSenderPeerID(socket);
+                
+                synchronized(this){
+                    if(isValidPiece(pieceNumber)){
+                        myBitMap.set(pieceNumber, true);
+                        pieceReceived.put(peerID, true);
+                        sendHaveMsg(pieceNum);
+                    }else{
+                        System.err.println("Received invalid piece: " + pieceNumber);
+                    }
+                }
+
+                try {
+                    String parentDir = new File (System.getProperty("user.dir")).getParent();
+                    String folderPath = parentDir + "/" + myPeerID;
+                    new File(folderPath + "/pieces").mkdirs();
+                    String outputFile = folderPath  + "/pieces/" +  pieceNumber;
+                    FileOutputStream fileOutput = new FileOutputStream(outputFile);
+                    fileOutput.write(fileContent, 0, fileLen);
+                    fileOutput.flush();
+                    fileOutput.close();
+                } catch (IOException e) {
+                System.err.println("Couldn't write the pieces");
+                }
+            
+                log("Peer " + myPeerID + " has downloaded the " + pieceNumber + " from " + getSenderPeerID(socket) +". Now the number of pieces it has is " +myBitMap.cardinality());
+            }
+        });
+
+        handlePieceThread.start();
     }
 
     public static void sendHaveMsg(byte[] pieceNumber){
@@ -701,23 +721,32 @@ public class PeerProcess implements Constants
     }
 
     public static void handleHave(Socket socket, Message recMsg){
-        int pieceNumber = new BigInteger(recMsg.msgPayLoad).intValue();
-        int peerID = getSenderPeerID(socket);
+        Thread handleHaveThread = new Thread(new Runnable() {
+            public void run()
+            {
+                int pieceNumber = new BigInteger(recMsg.msgPayLoad).intValue();
+                int peerID = getSenderPeerID(socket);
+                
+                synchronized(this){
+                    peerBitMap.get(peerID).set(pieceNumber,true);
+                }
 
-        peerBitMap.get(peerID).set(pieceNumber,true);
-        try {
-            Message interestedMsg;
-            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-            if((myBitMap.cardinality() != totalPieces) && (isInterested(peerID))){
-                interestedMsg =  new Message(INTERESTED, null); 
-            }else{
-                interestedMsg =  new Message(NOT_INTERESTED, null);
-            } 
-            out.write(interestedMsg.message);
-        } catch (IOException e) {
-            System.out.println("Failed while sending interested/notinterested message");
-        }
-        
+                try {
+                    Message interestedMsg;
+                    DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                    if((myBitMap.cardinality() != totalPieces) && (isInterested(peerID))){
+                        interestedMsg =  new Message(INTERESTED, null); 
+                    }else{
+                        interestedMsg =  new Message(NOT_INTERESTED, null);
+                    } 
+                    out.write(interestedMsg.message);
+                } catch (IOException e) {
+                    System.out.println("Failed while sending interested/notinterested message");
+                }
+            }
+        });
+
+        handleHaveThread.start();
     }
 
     public static void handleInterested(Socket socket, Message recMsg){
@@ -744,9 +773,14 @@ public class PeerProcess implements Constants
             try{
                 int byteCount = input.available();
                 // Wait until there's a new message in the queue
-                while(byteCount==0){
+                while(byteCount==0 && !fileShareCompleted.get()){
                     byteCount = input.available();
                 }
+
+                if(fileShareCompleted.get()){
+                    break;
+                }
+
                 byte newBuffer[] = new byte[byteCount];
                 input.read(newBuffer);
                 
@@ -791,6 +825,8 @@ public class PeerProcess implements Constants
                 System.out.println("Problem while listening");
             }
         }
+
+        System.out.println("OUT OF WHILE!!!");
     }
 
     public static void loadConfig(String commonConfigFile){
@@ -860,11 +896,12 @@ public class PeerProcess implements Constants
                 int len = fileInput.read(buffer, 0, pieceSize);
                 fileOutput.write(buffer, 0, len);
                 fileInput.close();
+                files[i].delete();
             }
 			
             fileOutput.flush();
             fileOutput.close();
-            
+            file.delete();
 		} catch (Exception e) {
             e.printStackTrace();
 			System.out.println("Couldn't join the file");
@@ -872,22 +909,27 @@ public class PeerProcess implements Constants
     }
     
     public static boolean isCompleted(){
+        if(myBitMap.cardinality() != totalPieces){
+            return false;
+        }
+
         for(PeerInfo peer : peerInfo){
             int peerID = peer.peerId;
+            System.out.println("Peer " + peerID);
+
+            if(!peerBitMap.containsKey(peerID)){
+                continue;
+            }
+            
             if(peerBitMap.get(peerID).cardinality() != totalPieces){
+                System.out.println("Incomplete " + peerID + " card " + peerBitMap.get(peerID).cardinality());
                 return false;
+            }else{
+                System.out.println("Looks okay " + peerID);
             }
         }
 
         return true;
-    }
-
-    public static void exitPeers(){
-        for(Thread lisThread : listenThreads){
-            // lisThread.stop();
-        }
-
-        System.out.println("File sharing complete!! Exiting peers...`");
     }
 
     public static void main(String[] args) {
@@ -908,6 +950,7 @@ public class PeerProcess implements Constants
             createPeerSocket(peerConfigFile);
             startSharing();
             listenForPeers();
+            System.out.println("WRAP UP");
         }
         catch (IOException e)
         {
