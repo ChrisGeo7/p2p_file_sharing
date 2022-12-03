@@ -64,6 +64,7 @@ public class PeerProcess implements Constants
     public static int totalPieces;
     public static ScheduledFuture<?> prefScheduler;
     public static ScheduledFuture<?> optScheduler;
+    public static ScheduledFuture<?> completionChecker;
     private final static AtomicBoolean fileShareCompleted = new AtomicBoolean(false);
 
     public static void log(String message){
@@ -249,14 +250,6 @@ public class PeerProcess implements Constants
 
     public static class setNeighbours implements Runnable{
         public void run(){
-            if(isCompleted()){
-                fileJoiner();
-                fileShareCompleted.set(true);
-                prefScheduler.cancel(false);
-                optScheduler.cancel(false);
-                Thread.currentThread().interrupt();
-            }
-
             Random random = new Random();  
             int interestedCount;
             List<Integer> prevneighborList = new ArrayList<>();
@@ -908,29 +901,34 @@ public class PeerProcess implements Constants
 		}
     }
     
-    public static boolean isCompleted(){
-        if(myBitMap.cardinality() != totalPieces){
-            return false;
-        }
-
-        for(PeerInfo peer : peerInfo){
-            int peerID = peer.peerId;
-            System.out.println("Peer " + peerID);
-
-            if(!peerBitMap.containsKey(peerID)){
-                continue;
+    public static class isCompleted implements Runnable {
+        public void run(){
+            if(myBitMap.cardinality() != totalPieces){
+                return;
             }
-            
-            if(peerBitMap.get(peerID).cardinality() != totalPieces){
-                System.out.println("Incomplete " + peerID + " card " + peerBitMap.get(peerID).cardinality());
-                return false;
-            }else{
-                System.out.println("Looks okay " + peerID);
-            }
-        }
 
-        return true;
-    }
+            for(PeerInfo peer : peerInfo){
+                int peerID = peer.peerId;
+
+                if(!peerBitMap.containsKey(peerID)){
+                    continue;
+                }
+                
+                if(peerBitMap.get(peerID).cardinality() != totalPieces){
+                    return;
+                }
+            }
+
+            System.out.println("File transfer Completed.. Exiting the process now!!");
+            fileJoiner();
+            fileShareCompleted.set(true);
+            prefScheduler.cancel(true);
+            optScheduler.cancel(true);
+            completionChecker.cancel(false);
+           
+            System.exit(0);
+        }
+    };
 
     public static void main(String[] args) {
         String inputPeerID = args[0];
@@ -948,6 +946,9 @@ public class PeerProcess implements Constants
             
             loadConfig(commonConfigFile);
             createPeerSocket(peerConfigFile);
+            ScheduledExecutorService scheduler
+                        = Executors.newScheduledThreadPool(1);
+            completionChecker = scheduler.scheduleAtFixedRate(new isCompleted(), 10, 10, TimeUnit.SECONDS);
             startSharing();
             listenForPeers();
             System.out.println("WRAP UP");
