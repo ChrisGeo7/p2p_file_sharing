@@ -235,6 +235,7 @@ public class PeerProcess implements Constants
                         }
 
                         fileBreaker();
+                        
                     }
 
                     // Establish connections with the other peers 
@@ -911,12 +912,13 @@ public class PeerProcess implements Constants
 
     public static void fileJoiner(){
         try {
+            System.out.println("entered here");
             String parentDir = new File (System.getProperty("user.dir")).getParent();
             String folderPath = parentDir + "/" + myPeerID;
             File file = new File(folderPath + "/pieces");
 		    File[] files = file.listFiles();
 		    Arrays.sort(files);
-
+            System.out.println(files.length);
             String outputFile = folderPath + "/" + fileName;
             FileOutputStream fileOutput = new FileOutputStream(outputFile);
 			
@@ -925,6 +927,7 @@ public class PeerProcess implements Constants
                 byte buffer[] = new byte[pieceSize];
                 int len = fileInput.read(buffer, 0, pieceSize);
                 fileOutput.write(buffer, 0, len);
+                
                 fileInput.close();
                 files[i].delete();
             }
@@ -936,6 +939,7 @@ public class PeerProcess implements Constants
             e.printStackTrace();
 			System.out.println("Couldn't join the file");
 		}
+        System.exit(0);
     }
     
     public static  class isCompleted implements Runnable {
@@ -962,13 +966,13 @@ public class PeerProcess implements Constants
             }
 
             System.out.println("File transfer Completed.. Exiting the process now!!");
-            fileJoiner();
+            
             fileShareCompleted.set(true);
             prefScheduler.cancel(true);
             optScheduler.cancel(true);
             completionChecker.cancel(false);
-           
-            System.exit(0);
+            fileJoiner();
+            
         }
     };
 
