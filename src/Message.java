@@ -19,7 +19,7 @@ public class Message implements Serializable, Constants {
         this.msgPayLoad=new byte[payLoadLen];
         this.msgPayLoad= msgPayLoad;
 
-        if(msgType == CHOKE || msgType == UNCHOKE || msgType == INTERESTED || msgType == NOT_INTERESTED){
+        if(msgType == CHOKE || msgType == UNCHOKE || msgType == INTERESTED || msgType == NOT_INTERESTED || msgType == COMPLETED){
             this.msgLen = MSG_TYPE_LEN;
         }else if(msgType == HAVE || msgType == REQUEST || msgType == PIECE){
             this.msgLen = MSG_TYPE_LEN + 4;

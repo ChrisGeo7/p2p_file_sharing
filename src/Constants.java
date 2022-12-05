@@ -19,6 +19,7 @@ public interface Constants {
 	public static final int BITFIELD = 5;
 	public static final int REQUEST = 6;
 	public static final int PIECE = 7;
+	public static final int COMPLETED = 8;
 	
 	// For 'have' messages
 	public static final int PIECE_INDEX_FIELD = 4;
