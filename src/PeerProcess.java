@@ -279,7 +279,11 @@ public class PeerProcess implements Constants
                 neighborList.clear();
 
                 for(int i = 0; i < numPreferredNeighbors; i++){
-                    Integer neighbor = it.next();
+                    Integer neighbor;
+                    do{
+                        neighbor= it.next();
+                    } while(it!=null && !peerIsInterested.contains(neighbor));
+
                     neighborList.add(neighbor);
                     // System.out.println("Neighour " + i + neighbor + " has download rate " + peerDownloadRate.get(neighbor));
                 }
@@ -635,6 +639,7 @@ public class PeerProcess implements Constants
 
             out.write(pieceMsg.message);            
         } catch (IOException e) {
+            System.out.println(e);
             System.err.println("Error while sending piece");
         }
     }
@@ -662,30 +667,32 @@ public class PeerProcess implements Constants
                 int pieceNumber = new BigInteger(pieceNum).intValue();
                 int peerID = getSenderPeerID(socket);
                 
-                synchronized(this){
-                    if(isValidPiece(pieceNumber)){
-                        myBitMap.set(pieceNumber, true);
-                        pieceReceived.put(peerID, true);
-                        sendHaveMsg(pieceNum);
-                    }else{
-                        System.err.println("Received invalid piece: " + pieceNumber);
+                if(fileLen == pieceSize){
+                    synchronized(this){
+                        if(isValidPiece(pieceNumber)){
+                            myBitMap.set(pieceNumber, true);
+                            pieceReceived.put(peerID, true);
+                            sendHaveMsg(pieceNum);
+                        }else{
+                            System.err.println("Received invalid piece: " + pieceNumber);
+                        }
                     }
+                    
+                    try {
+                        String parentDir = new File (System.getProperty("user.dir")).getParent();
+                        String folderPath = parentDir + "/" + myPeerID;
+                        new File(folderPath + "/pieces").mkdirs();
+                        String outputFile = folderPath  + "/pieces/" +  pieceNumber;
+                        FileOutputStream fileOutput = new FileOutputStream(outputFile);
+                        fileOutput.write(fileContent, 0, fileLen);
+                        fileOutput.flush();
+                        fileOutput.close();
+                    } catch (IOException e) {
+                    System.err.println("Couldn't write the pieces");
+                    }
+                
+                    log("Peer " + myPeerID + " has downloaded the " + pieceNumber + " from " + getSenderPeerID(socket) +". Now the number of pieces it has is " +myBitMap.cardinality());
                 }
-
-                try {
-                    String parentDir = new File (System.getProperty("user.dir")).getParent();
-                    String folderPath = parentDir + "/" + myPeerID;
-                    new File(folderPath + "/pieces").mkdirs();
-                    String outputFile = folderPath  + "/pieces/" +  pieceNumber;
-                    FileOutputStream fileOutput = new FileOutputStream(outputFile);
-                    fileOutput.write(fileContent, 0, fileLen);
-                    fileOutput.flush();
-                    fileOutput.close();
-                } catch (IOException e) {
-                System.err.println("Couldn't write the pieces");
-                }
-            
-                log("Peer " + myPeerID + " has downloaded the " + pieceNumber + " from " + getSenderPeerID(socket) +". Now the number of pieces it has is " +myBitMap.cardinality());
             }
         });
 
@@ -746,6 +753,12 @@ public class PeerProcess implements Constants
         int peerID = getSenderPeerID(socket);
         completedPeers.add(peerID);
         System.out.println(peerID + " got the file completely");
+        if(peerDownloadRate.containsKey(peerID)){
+            peerDownloadRate.remove(peerID);
+        }
+        if(peerIsInterested.contains(peerID)){
+            peerIsInterested.remove(peerID);
+        }
     }
 
 
@@ -755,7 +768,7 @@ public class PeerProcess implements Constants
             {
                 int pieceNumber = new BigInteger(recMsg.msgPayLoad).intValue();
                 int peerID = getSenderPeerID(socket);
-                
+                log("Peer " + myPeerID + " received the 'have' message from " + peerID + " for the piece " + pieceNumber);
                 synchronized(this){
                     peerBitMap.get(peerID).set(pieceNumber,true);
                 }
@@ -780,7 +793,7 @@ public class PeerProcess implements Constants
 
     public static synchronized void handleInterested(Socket socket, Message recMsg){
         int peerID = getSenderPeerID(socket);
-
+        log("Peer " + myPeerID + " received the 'interested' message from " + peerID);
         if(!peerIsInterested.contains(peerID))
         {
             peerIsInterested.add(peerID);
@@ -789,7 +802,7 @@ public class PeerProcess implements Constants
 
     public static synchronized void handleNotInterested(Socket socket, Message recMsg){
         int peerID = getSenderPeerID(socket);
-
+        log("Peer " + myPeerID + " received the 'not interested' message from " + peerID);
         if(peerIsInterested.contains(peerID))
         {
             peerIsInterested.remove(Integer.valueOf(peerID));
@@ -834,12 +847,10 @@ public class PeerProcess implements Constants
                         break;
                 
                     case HAVE:
-                        log("Received Have Message from " + getSenderPeerID(socket));
                         handleHave(socket, recMsg);
                         break;
                     
                     case REQUEST:
-                        log("Received Request Message");
                         handleRequest(socket, recMsg);
                         break;
                     
@@ -912,13 +923,12 @@ public class PeerProcess implements Constants
 
     public static void fileJoiner(){
         try {
-            System.out.println("entered here");
             String parentDir = new File (System.getProperty("user.dir")).getParent();
             String folderPath = parentDir + "/" + myPeerID;
             File file = new File(folderPath + "/pieces");
 		    File[] files = file.listFiles();
 		    Arrays.sort(files);
-            System.out.println(files.length);
+
             String outputFile = folderPath + "/" + fileName;
             FileOutputStream fileOutput = new FileOutputStream(outputFile);
 			
@@ -927,7 +937,6 @@ public class PeerProcess implements Constants
                 byte buffer[] = new byte[pieceSize];
                 int len = fileInput.read(buffer, 0, pieceSize);
                 fileOutput.write(buffer, 0, len);
-                
                 fileInput.close();
                 files[i].delete();
             }
@@ -939,6 +948,7 @@ public class PeerProcess implements Constants
             e.printStackTrace();
 			System.out.println("Couldn't join the file");
 		}
+        log("Peer " + myPeerID + " has downloaded the complete file.");
         System.exit(0);
     }
     
