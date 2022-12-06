@@ -25,6 +25,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
@@ -68,6 +69,7 @@ public class PeerProcess implements Constants
     public static ScheduledFuture<?> optScheduler;
     public static ScheduledFuture<?> completionChecker;
     private final static AtomicBoolean fileShareCompleted = new AtomicBoolean(false);
+    private final static AtomicBoolean haveCompleteFile = new AtomicBoolean(false);
 
     public static void log(String message){
         LocalDateTime curTime = LocalDateTime.now();
@@ -156,7 +158,7 @@ public class PeerProcess implements Constants
 
                             // check if interested in the peer
                             Message interestedMsg;
-                            if((myBitMap.cardinality() != totalPieces) && (isInterested(peer.peerId))){
+                            if((myBitMap.cardinality() < totalPieces) && (isInterested(peer.peerId))){
                                 interestedMsg =  new Message(INTERESTED, null); 
                             }else{
                                 interestedMsg =  new Message(NOT_INTERESTED, null);
@@ -233,9 +235,9 @@ public class PeerProcess implements Constants
                         if(!dst.exists()){
                             Files.copy(srcFile,dstFile);
                         }
-
-                        fileBreaker();
                         
+                        fileBreaker();
+                        haveCompleteFile.set(true);
                     }
 
                     // Establish connections with the other peers 
@@ -269,19 +271,23 @@ public class PeerProcess implements Constants
                 for(int i = 0; i < neighborList.size(); i++){
                     prevneighborList.add(neighborList.get(i));
                 }
-            }
 
-            if(neighborList.size() == 0){
-                for(int i = 0; i < numPreferredNeighbors; i++){
-                    neighborList.add(peerIsInterested.get(random.nextInt(interestedCount)));
-                }
-            }else{
-                neighborList.clear();
-
-                for(int i = 0; i < numPreferredNeighbors; i++){
-                    Integer neighbor = it.next();
-                    neighborList.add(neighbor);
-                    // System.out.println("Neighour " + i + neighbor + " has download rate " + peerDownloadRate.get(neighbor));
+                if(neighborList.size() == 0){
+                    int maxSize = numPreferredNeighbors > interestedCount ? interestedCount :numPreferredNeighbors;
+                    for(int i = 0; i < maxSize; i++){
+                        neighborList.add(peerIsInterested.get(random.nextInt(interestedCount)));
+                    }
+                }else{
+                    neighborList.clear();
+                    int maxSize = sortedMap.size() > numPreferredNeighbors ? numPreferredNeighbors : sortedMap.size();
+                    for(int i = 0; i < maxSize && it.hasNext(); i++){
+                        Integer neighbor;
+                        do{
+                            neighbor= it.next();
+                        } while(it!=null && !peerIsInterested.contains(neighbor));
+                        
+                        neighborList.add(neighbor);
+                    }
                 }
             }
 
@@ -303,7 +309,6 @@ public class PeerProcess implements Constants
             
             for(int peer: peerIsInterested){
                 if(chokedPeers.get(peer)){
-                    System.out.println("Choked neighbor "+ peer);
                     randomPeers.add(peer);
                 }
             }
@@ -408,7 +413,6 @@ public class PeerProcess implements Constants
                                     chokedPeers.put(callerPeerID, true);
                                 }
                                 
-                                System.out.println("Current cardinality " + myBitMap.cardinality());
                                 // Send the bitfield 
                                 Message msg = new Message(BITFIELD, myBitMap.toByteArray());
                                 out.write(msg.message);
@@ -436,7 +440,7 @@ public class PeerProcess implements Constants
                                 }
 
                                 Message interestedMsg;
-                                if((myBitMap.cardinality() != totalPieces) && (isInterested(callerPeerID))){
+                                if((myBitMap.cardinality() < totalPieces) && (isInterested(callerPeerID))){
                                     interestedMsg =  new Message(INTERESTED, null); 
                                 }else{
                                     interestedMsg =  new Message(NOT_INTERESTED, null);
@@ -460,13 +464,15 @@ public class PeerProcess implements Constants
     }
 
     public static void sendchokemsg(List<Integer> neighborList, List<Integer> prevneighborList){
-        for(int i = 0; i < neighborList.size(); i ++)
+        if(prevneighborList.size() == 0){
+            return;
+        }
+        
+        for(int i = 0; i < prevneighborList.size(); i ++)
         {   
-            if(prevneighborList.size() == 0){
-                break;
-            }
+            int prevNeighbour =prevneighborList.get(i);
             
-            if(!neighborList.contains(prevneighborList.get(i))){
+            if(!neighborList.contains(prevNeighbour)){
                 int peerID = prevneighborList.get(i);
                 try {
                     Socket socket = peerSocketMap.get(peerID);
@@ -497,14 +503,12 @@ public class PeerProcess implements Constants
 
     public static void handleChoke(Socket socket) {
         int peerID = getSenderPeerID(socket);
-        System.out.println(myPeerID + "has been choked by " + peerID);
         peerHasChoked.put(peerID, true);
     }
 
     public static void handleUnChoke(Socket socket) {
         int peerID = getSenderPeerID(socket);
         peerHasChoked.put(peerID, false);
-        System.out.println(myPeerID + "has been unchoked by " + peerID);
         sendRequest(socket);
     }
 
@@ -547,8 +551,11 @@ public class PeerProcess implements Constants
     } 
 
     public static synchronized void sendRequest(Socket socket){
-        if(myBitMap.cardinality() ==totalPieces){
-            sendCompletedMsg();
+        if(myBitMap.cardinality() == totalPieces){
+            try (DataOutputStream out = new DataOutputStream(socket.getOutputStream())) {
+                Message interestedMsg =  new Message(NOT_INTERESTED, null);
+                out.write(interestedMsg.message);
+            } catch (IOException e) {}
             return;
         }
         
@@ -746,6 +753,14 @@ public class PeerProcess implements Constants
         int peerID = getSenderPeerID(socket);
         completedPeers.add(peerID);
         System.out.println(peerID + " got the file completely");
+
+        if(peerDownloadRate.containsKey(peerID)){
+            peerDownloadRate.remove(peerID);
+        }
+
+        if(peerIsInterested.contains(peerID)){
+            peerIsInterested.remove(Integer.valueOf(peerID));
+        }
     }
 
 
@@ -763,12 +778,13 @@ public class PeerProcess implements Constants
                 try {
                     Message interestedMsg;
                     DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-                    if((myBitMap.cardinality() != totalPieces) && (isInterested(peerID))){
+                    if(myBitMap.get(pieceNumber) == false){
                         interestedMsg =  new Message(INTERESTED, null); 
-                    }else{
+                        out.write(interestedMsg.message);
+                    }else if(!isInterested(peerID)){
                         interestedMsg =  new Message(NOT_INTERESTED, null);
-                    } 
-                    out.write(interestedMsg.message);
+                        out.write(interestedMsg.message);
+                    }
                 } catch (IOException e) {
                     System.out.println("Failed while sending interested/notinterested message");
                 }
@@ -780,7 +796,7 @@ public class PeerProcess implements Constants
 
     public static synchronized void handleInterested(Socket socket, Message recMsg){
         int peerID = getSenderPeerID(socket);
-
+        log("Peer " + myPeerID + " received the 'interested' message from " + peerID);
         if(!peerIsInterested.contains(peerID))
         {
             peerIsInterested.add(peerID);
@@ -789,6 +805,7 @@ public class PeerProcess implements Constants
 
     public static synchronized void handleNotInterested(Socket socket, Message recMsg){
         int peerID = getSenderPeerID(socket);
+        log("Peer " + myPeerID + " received the 'not interested' message from " + peerID);
 
         if(peerIsInterested.contains(peerID))
         {
@@ -826,6 +843,7 @@ public class PeerProcess implements Constants
                         break;
                     
                     case INTERESTED:
+                    
                         handleInterested(socket, recMsg);
                         break;
                     
@@ -910,6 +928,21 @@ public class PeerProcess implements Constants
 		}
     }
 
+    public static void deleteTempFiles(){
+        try {
+            String parentDir = new File (System.getProperty("user.dir")).getParent();
+            String folderPath = parentDir + "/" + myPeerID;
+            File file = new File(folderPath + "/pieces");
+		    File[] files = file.listFiles();
+			
+            for(int i = 0; i < files.length; i++){
+                files[i].delete();
+            }
+			
+            file.delete();
+		} catch (Exception e) {}
+    }
+
     public static void fileJoiner(){
         try {
             System.out.println("entered here");
@@ -929,26 +962,27 @@ public class PeerProcess implements Constants
                 fileOutput.write(buffer, 0, len);
                 
                 fileInput.close();
-                files[i].delete();
             }
 			
             fileOutput.flush();
             fileOutput.close();
-            file.delete();
+            haveCompleteFile.set(true);
 		} catch (Exception e) {
             e.printStackTrace();
 			System.out.println("Couldn't join the file");
 		}
-        System.exit(0);
     }
     
     public static  class isCompleted implements Runnable {
         public void run(){
-            System.out.println("is completed called");
-            if(myBitMap.cardinality() != totalPieces){
+            if(myBitMap.cardinality() < totalPieces){
                 return;
             }
-            sendCompletedMsg();
+            
+            if(!haveCompleteFile.get()){
+                fileJoiner();
+                sendCompletedMsg();
+            }
             // for(PeerInfo peer : peerInfo){
             //     int peerID = peer.peerId;
                 
@@ -961,7 +995,7 @@ public class PeerProcess implements Constants
             //         return;
             //     }
             // }
-            if(completedPeers.size() != peerSocketMap.size()){
+            if(completedPeers.size() < peerSocketMap.size()){
                 return;
             }
 
@@ -971,8 +1005,8 @@ public class PeerProcess implements Constants
             prefScheduler.cancel(true);
             optScheduler.cancel(true);
             completionChecker.cancel(false);
-            fileJoiner();
-            
+            deleteTempFiles();
+            System.exit(0);
         }
     };
 
