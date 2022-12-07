@@ -217,6 +217,10 @@ public class PeerProcess implements Constants
                 
                 if (!currentPeerID.equals(Integer.toString(myPeerID))){
                     peerInfo.addElement(new PeerInfo(Integer.parseInt(value[0]), value[1], value[2]));
+                    if(value[3].equals("1")){
+                        System.out.println("Peer completed already "+ currentPeerID);
+                        completedPeers.add(Integer.parseInt(currentPeerID));
+                    }
                 }else{
                     String port = value[2];
                     Boolean hasFile = value[3].equals("1");
@@ -305,24 +309,15 @@ public class PeerProcess implements Constants
 
     public static class setRandomNeighbours implements Runnable {
         public void run(){
-            List<Integer> randomPeers = new ArrayList<>();
-            
-            for(int peer: peerIsInterested){
-                if(chokedPeers.get(peer)){
-                    randomPeers.add(peer);
-                }
-            }
-
             int newID = 0;
             
-            if(randomPeers.size()==0){
-                sendchokemsg(Arrays.asList(newID), Arrays.asList(randomPeerID));
+            if(peerIsInterested.size()==0){
                 randomPeerID =0;
                 return;
             }else{
                 Random random = new Random();
-                int id = random.nextInt(randomPeers.size()); 
-                newID = randomPeers.get(id);
+                int id = random.nextInt(peerIsInterested.size()); 
+                newID = peerIsInterested.get(id);
             }
             
             if(randomPeerID == 0){
@@ -331,12 +326,9 @@ public class PeerProcess implements Constants
                 sendunchokemsg(Arrays.asList(newID));
             } else{
                 sendchokemsg(Arrays.asList(newID), Arrays.asList(randomPeerID));
-                
-                if(randomPeerID != newID){
-                    log("Peer " + myPeerID + " has the optimistically unchoked neighbor "+ newID);
-                    sendunchokemsg(Arrays.asList(newID));
-                    randomPeerID = newID;
-                }
+                log("Peer " + myPeerID + " has the optimistically unchoked neighbor "+ newID);
+                sendunchokemsg(Arrays.asList(newID));
+                randomPeerID = newID;
             }
         }
     };
@@ -561,23 +553,35 @@ public class PeerProcess implements Constants
         
         int peerID = getSenderPeerID(socket);
         
-        
         Thread sendReqThread = new Thread(new Runnable() {
             public void run()
             {
                 while(!peerHasChoked.get(peerID)){
                     int missingPieceIndex = Integer.MIN_VALUE;
                     Random random = new Random();
+                    int counter = 0;
                     
-                    while(true){
+                    while(counter < 10){
                         int pos = random.nextInt(totalPieces);
+                        counter++;
 
                         if(myBitMap.get(pos) == false && peerBitMap.get(peerID).get(pos) == true){
                             missingPieceIndex = pos;
                             break;
                         }
                     }  
-                
+                    
+                    if(missingPieceIndex == Integer.MIN_VALUE){
+                        while(true){
+                            int pos = myBitMap.nextClearBit(0);
+                        
+                            if(peerBitMap.get(peerID).get(pos) == true){
+                                missingPieceIndex = pos;
+                                break;
+                            }
+                        } 
+                        System.out.println("Req piece " + missingPieceIndex);
+                    }
                     byte[] reqMsgPayLoad = ByteBuffer.allocate(4).putInt(missingPieceIndex).array();
                     Message reqMsg = new Message(REQUEST, reqMsgPayLoad);
                     pieceReceived.put(peerID, false);
@@ -588,7 +592,7 @@ public class PeerProcess implements Constants
                         
                         // Wait until the requested piece is received
                         while(!pieceReceived.get(peerID)){
-                            Thread.sleep(100);
+                            Thread.sleep(10);
                         }
                     } catch (IOException | InterruptedException e) {
                         System.err.println("Couldn't send request message!!!");
@@ -670,7 +674,7 @@ public class PeerProcess implements Constants
                 int pieceNumber = new BigInteger(pieceNum).intValue();
                 int peerID = getSenderPeerID(socket);
                 
-                if(fileLen == pieceSize){
+                // if(fileLen == pieceSize){
                     synchronized(this){
                         if(isValidPiece(pieceNumber)){
                             myBitMap.set(pieceNumber, true);
@@ -695,7 +699,6 @@ public class PeerProcess implements Constants
                     }
                 
                     log("Peer " + myPeerID + " has downloaded the " + pieceNumber + " from " + getSenderPeerID(socket) +". Now the number of pieces it has is " +myBitMap.cardinality());
-                }
             }
         });
 
@@ -757,6 +760,7 @@ public class PeerProcess implements Constants
         completedPeers.add(peerID);
         System.out.println(peerID + " got the file completely");
 
+        peerBitMap.get(peerID).set(0, totalPieces, true);
         if(peerDownloadRate.containsKey(peerID)){
             peerDownloadRate.remove(peerID);
         }
@@ -822,6 +826,7 @@ public class PeerProcess implements Constants
                 int byteCount = input.available();
                 // Wait until there's a new message in the queue
                 while(byteCount==0 && !fileShareCompleted.get()){
+                    Thread.sleep(10);
                     byteCount = input.available();
                 }
 
@@ -870,7 +875,7 @@ public class PeerProcess implements Constants
                     default:
                         break;
                 }
-            } catch(IOException e){
+            } catch(IOException | InterruptedException e){
                 System.out.println("Problem while listening");
             }
         }
@@ -965,6 +970,7 @@ public class PeerProcess implements Constants
             fileOutput.flush();
             fileOutput.close();
             haveCompleteFile.set(true);
+            log("Peer " + myPeerID + " has received the complete file");
 		} catch (Exception e) {
             e.printStackTrace();
 			System.out.println("Couldn't join the file");
@@ -981,20 +987,11 @@ public class PeerProcess implements Constants
                 fileJoiner();
                 sendCompletedMsg();
             }
-            // for(PeerInfo peer : peerInfo){
-            //     int peerID = peer.peerId;
-                
-            //     if(!peerBitMap.containsKey(peerID)){
-            //         continue;
-            //     }
-                
-            //     if(peerBitMap.get(peerID).cardinality() != totalPieces){
-            //         System.out.println(peerID +"  "+peerBitMap.get(peerID).nextClearBit(0));
-            //         return;
-            //     }
-            // }
-            if(completedPeers.size() < peerSocketMap.size()){
-                return;
+
+            for(int peer : peerSocketMap.keySet()){
+                if(!completedPeers.contains(peer)){
+                    return;
+                }
             }
 
             System.out.println("File transfer Completed.. Exiting the process now!!");
