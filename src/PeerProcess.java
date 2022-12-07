@@ -75,6 +75,7 @@ public class PeerProcess implements Constants
         LocalDateTime curTime = LocalDateTime.now();
         DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");  
         logFileHandler.println(dtf.format(curTime) + ": " + message);
+        logFileHandler.flush();
     }
 
     public static boolean isValidPiece(int pieceNum){
