@@ -233,7 +233,7 @@ public class PeerProcess implements Constants
                     if(hasFile){
                         String parentDir = new File (System.getProperty("user.dir")).getParent();
                         Path srcFile =Paths.get(parentDir + "/" + fileName);
-                        Path dstFile = Paths.get(parentDir + "/" + myPeerID + "/" + fileName);
+                        Path dstFile = Paths.get(parentDir + "/peer_" + myPeerID + "/" + fileName);
                         File dst = new File(dstFile.toString());
                         
                         if(!dst.exists()){
@@ -629,7 +629,7 @@ public class PeerProcess implements Constants
     public static synchronized void sendPiece(Socket socket, int pieceNumber){
         try {
             String parentDir = new File (System.getProperty("user.dir")).getParent();
-            String folderPath = parentDir + "/" + myPeerID;
+            String folderPath = parentDir + "/peer_" + myPeerID;
             FileInputStream fileInput = new FileInputStream(folderPath  + "/pieces/" + pieceNumber);
             
             byte buffer[] = new byte[pieceSize + 4];
@@ -687,7 +687,7 @@ public class PeerProcess implements Constants
                     
                     try {
                         String parentDir = new File (System.getProperty("user.dir")).getParent();
-                        String folderPath = parentDir + "/" + myPeerID;
+                        String folderPath = parentDir + "/peer_" + myPeerID;
                         new File(folderPath + "/pieces").mkdirs();
                         String outputFile = folderPath  + "/pieces/" +  pieceNumber;
                         FileOutputStream fileOutput = new FileOutputStream(outputFile);
@@ -907,7 +907,7 @@ public class PeerProcess implements Constants
     public static void fileBreaker(){
         try {
             String parentDir = new File (System.getProperty("user.dir")).getParent();
-            String folderPath = parentDir + "/" + myPeerID;
+            String folderPath = parentDir + "/peer_" + myPeerID;
 			FileInputStream fileInput = new FileInputStream(folderPath  + "/" + fileName);
 			byte buffer[] = new byte[pieceSize];
 			int index = 0;
@@ -936,7 +936,7 @@ public class PeerProcess implements Constants
     public static void deleteTempFiles(){
         try {
             String parentDir = new File (System.getProperty("user.dir")).getParent();
-            String folderPath = parentDir + "/" + myPeerID;
+            String folderPath = parentDir + "/peer_" + myPeerID;
             File file = new File(folderPath + "/pieces");
 		    File[] files = file.listFiles();
 			
@@ -951,7 +951,7 @@ public class PeerProcess implements Constants
     public static void fileJoiner(){
         try {
             String parentDir = new File (System.getProperty("user.dir")).getParent();
-            String folderPath = parentDir + "/" + myPeerID;
+            String folderPath = parentDir + "/peer_" + myPeerID;
             File file = new File(folderPath + "/pieces");
 		    File[] files = file.listFiles();
 		    Arrays.sort(files);
@@ -970,7 +970,7 @@ public class PeerProcess implements Constants
             fileOutput.flush();
             fileOutput.close();
             haveCompleteFile.set(true);
-            log("Peer " + myPeerID + " has received the complete file");
+            log("Peer " + myPeerID + " has downloaded the complete file");
 		} catch (Exception e) {
             e.printStackTrace();
 			System.out.println("Couldn't join the file");
@@ -1010,7 +1010,7 @@ public class PeerProcess implements Constants
         myPeerID = Integer.parseInt(inputPeerID);
         
         String parentDir = new File (System.getProperty("user.dir")).getParent();
-        new File(parentDir + "/" + myPeerID).mkdirs();
+        new File(parentDir + "/peer_" + myPeerID).mkdirs();
 
         try {
             // Add handler for logging current node's logs
