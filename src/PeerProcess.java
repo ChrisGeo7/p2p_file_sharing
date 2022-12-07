@@ -185,7 +185,12 @@ public class PeerProcess implements Constants
                             
                             Thread listenerThread = new Thread(new Runnable(){
                                 public void run(){
-                                    listenForever(peerSocket, input, out);
+                                    try {
+                                        listenForever(peerSocket, input, out);
+                                        input.close();
+                                        out.close();
+                                    } catch (IOException e) {
+                                    }
                                 }
                             });
                             listenerThread.start();
@@ -441,7 +446,8 @@ public class PeerProcess implements Constants
                                 out.write(interestedMsg.message);
 
                                 listenForever(socket,input, out);
-                                System.out.println("WRAPPED UP LISTEN FOREVER");
+                                input.close();
+                                out.close();
                             }        
                         } catch (IOException e) {
                             System.out.println("Failed while peer connection");
@@ -544,6 +550,7 @@ public class PeerProcess implements Constants
 
     public static synchronized void sendRequest(Socket socket){
         if(myBitMap.cardinality() == totalPieces){
+            System.out.println("COMPLETED");
             try (DataOutputStream out = new DataOutputStream(socket.getOutputStream())) {
                 Message interestedMsg =  new Message(NOT_INTERESTED, null);
                 out.write(interestedMsg.message);
@@ -590,11 +597,11 @@ public class PeerProcess implements Constants
                         DataOutputStream out = new DataOutputStream(socket.getOutputStream());
                         out.write(reqMsg.message);
                         
-                        // Wait until the requested piece is received
-                        while(!pieceReceived.get(peerID)){
-                            Thread.sleep(10);
-                        }
-                    } catch (IOException | InterruptedException e) {
+                        // // Wait until the requested piece is received
+                        // while(!pieceReceived.get(peerID)){
+                        //     Thread.sleep(10);
+                        // }
+                    } catch (IOException e) {
                         System.err.println("Couldn't send request message!!!");
                     }
                 }
@@ -627,6 +634,9 @@ public class PeerProcess implements Constants
     }
 
     public static synchronized void sendPiece(Socket socket, int pieceNumber){
+        Thread sendPiece = new Thread(new Runnable() {
+            public void run()
+            {
         try {
             String parentDir = new File (System.getProperty("user.dir")).getParent();
             String folderPath = parentDir + "/peer_" + myPeerID;
@@ -643,12 +653,16 @@ public class PeerProcess implements Constants
 
             Message pieceMsg = new Message(PIECE, buffer);
             DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-
+            
             out.write(pieceMsg.message);            
         } catch (IOException e) {
             System.out.println(e);
             System.err.println("Error while sending piece");
         }
+        }
+        });
+
+        sendPiece.start();
     }
 
     public static synchronized void handlePiece(Socket socket, Message pieceMsg) {
@@ -821,13 +835,12 @@ public class PeerProcess implements Constants
 
     public static void listenForever(Socket socket, DataInputStream input, DataOutputStream out){
         // infinite listen!!!!
-        while(true){
+        while(!fileShareCompleted.get()){
             try{
                 int byteCount = input.available();
                 // Wait until there's a new message in the queue
                 while(byteCount==0 && !fileShareCompleted.get()){
-                    Thread.sleep(10);
-                    byteCount = input.available();
+                    byteCount = input!=null ? input.available():0;
                 }
 
                 if(fileShareCompleted.get()){
@@ -838,6 +851,7 @@ public class PeerProcess implements Constants
                 input.read(newBuffer);
                 
                 Message recMsg = new Message(newBuffer);
+                System.out.println("GOT MESSAGE of type "+recMsg.msgType);
                 switch (recMsg.msgType) {
                     case CHOKE:
                         log("Peer " + myPeerID + " is choked by " + getSenderPeerID(socket));
@@ -875,12 +889,12 @@ public class PeerProcess implements Constants
                     default:
                         break;
                 }
-            } catch(IOException | InterruptedException e){
+            } catch(IOException e){
+                e.printStackTrace();
                 System.out.println("Problem while listening");
+                System.exit(0);
             }
         }
-
-        System.out.println("OUT OF WHILE!!!");
     }
 
     public static void loadConfig(String commonConfigFile){
