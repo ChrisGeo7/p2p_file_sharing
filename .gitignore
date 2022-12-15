@@ -3,3 +3,4 @@
 settings.json
 *.log
 10*
+peer_*

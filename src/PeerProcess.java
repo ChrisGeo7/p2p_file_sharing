@@ -228,6 +228,8 @@ public class PeerProcess implements Constants
                     // Create a socket at the port for TCP connections
                     mySocket = new ServerSocket(Integer.parseInt(port));
 
+                    log("Socket created for " + myPeerID);
+
                     // Set the bitmap
                     myBitMap.set(0, totalPieces, hasFile);
 
